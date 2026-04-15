@@ -1,10 +1,11 @@
 import axios from 'axios'
+import useAuthStore from '../store/authStore'
 
 const api = axios.create({ baseURL: '/api' })
 
+// 直接从 Zustand store 内存中读取 token（authStore 没有 persist，token 只在内存里）
 api.interceptors.request.use((config) => {
-  const raw = localStorage.getItem('auth-storage')
-  const token = raw ? JSON.parse(raw)?.state?.token : null
+  const token = useAuthStore.getState().token
   if (token) config.headers.Authorization = `Bearer ${token}`
   return config
 })
