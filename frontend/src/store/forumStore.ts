@@ -1,4 +1,6 @@
 import { create } from 'zustand'
+import { persist, createJSONStorage } from 'zustand/middleware'
+import { userAwareStorage } from '../utils/userStorage'
 
 export interface Post {
   id: string
@@ -29,6 +31,7 @@ interface ForumState {
   leave: (id: number) => void
   toggleLike: (postId: string) => void
   addComment: (postId: string, content: string, author: { name: string; initial: string; color: string }) => void
+  reset: () => void
 }
 
 const MOCK_POSTS: Post[] = [
@@ -95,33 +98,44 @@ const MOCK_COMMENTS: Comment[] = [
   { id: 'c7', postId: 'p8', author: { name: '林思远', initial: '林', color: '#f7971e' }, content: '你是哪个部门的？求经验帖', time: '昨天' },
 ]
 
-const useForumStore = create<ForumState>((set) => ({
-  joinedIds: [1, 2],
-  posts: MOCK_POSTS,
-  comments: MOCK_COMMENTS,
+const useForumStore = create<ForumState>()(
+  persist(
+    (set) => ({
+      joinedIds: [1, 2],
+      posts: MOCK_POSTS,
+      comments: MOCK_COMMENTS,
 
-  join: (id) => set((s) => ({ joinedIds: [...s.joinedIds, id] })),
-  leave: (id) => set((s) => ({ joinedIds: s.joinedIds.filter((i) => i !== id) })),
+      join: (id) => set((s) => ({ joinedIds: [...s.joinedIds, id] })),
+      leave: (id) => set((s) => ({ joinedIds: s.joinedIds.filter((i) => i !== id) })),
 
-  toggleLike: (postId) =>
-    set((s) => ({
-      posts: s.posts.map((p) =>
-        p.id === postId
-          ? { ...p, liked: !p.liked, likes: p.liked ? p.likes - 1 : p.likes + 1 }
-          : p
-      ),
-    })),
+      toggleLike: (postId) =>
+        set((s) => ({
+          posts: s.posts.map((p) =>
+            p.id === postId
+              ? { ...p, liked: !p.liked, likes: p.liked ? p.likes - 1 : p.likes + 1 }
+              : p
+          ),
+        })),
 
-  addComment: (postId, content, author) =>
-    set((s) => ({
-      comments: [
-        ...s.comments,
-        { id: `c${Date.now()}`, postId, author, content, time: '刚刚' },
-      ],
-      posts: s.posts.map((p) =>
-        p.id === postId ? { ...p, comments: p.comments + 1 } : p
-      ),
-    })),
-}))
+      addComment: (postId, content, author) =>
+        set((s) => ({
+          comments: [
+            ...s.comments,
+            { id: `c${Date.now()}`, postId, author, content, time: '刚刚' },
+          ],
+          posts: s.posts.map((p) =>
+            p.id === postId ? { ...p, comments: p.comments + 1 } : p
+          ),
+        })),
+
+      reset: () => set({ joinedIds: [1, 2] }),
+    }),
+    {
+      name: 'shixi-forum',
+      storage: createJSONStorage(() => userAwareStorage),
+      partialize: (s) => ({ joinedIds: s.joinedIds }),
+    }
+  )
+)
 
 export default useForumStore

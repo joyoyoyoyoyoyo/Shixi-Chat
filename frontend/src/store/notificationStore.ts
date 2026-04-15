@@ -1,4 +1,6 @@
 import { create } from 'zustand'
+import { persist, createJSONStorage } from 'zustand/middleware'
+import { userAwareStorage } from '../utils/userStorage'
 
 export type NotifType = 'mention' | 'join_request' | 'like' | 'comment'
 
@@ -18,6 +20,7 @@ interface NotifState {
   markRead: (id: string) => void
   markAllRead: () => void
   handleRequest: (id: string, action: 'approved' | 'rejected') => void
+  reset: () => void
 }
 
 const MOCK_NOTIFS: Notification[] = [
@@ -65,27 +68,38 @@ const MOCK_NOTIFS: Notification[] = [
   },
 ]
 
-const useNotifStore = create<NotifState>((set) => ({
-  notifications: MOCK_NOTIFS,
+const useNotifStore = create<NotifState>()(
+  persist(
+    (set) => ({
+      notifications: MOCK_NOTIFS,
 
-  markRead: (id) =>
-    set((s) => ({
-      notifications: s.notifications.map((n) =>
-        n.id === id ? { ...n, read: true } : n
-      ),
-    })),
+      markRead: (id) =>
+        set((s) => ({
+          notifications: s.notifications.map((n) =>
+            n.id === id ? { ...n, read: true } : n
+          ),
+        })),
 
-  markAllRead: () =>
-    set((s) => ({
-      notifications: s.notifications.map((n) => ({ ...n, read: true })),
-    })),
+      markAllRead: () =>
+        set((s) => ({
+          notifications: s.notifications.map((n) => ({ ...n, read: true })),
+        })),
 
-  handleRequest: (id, action) =>
-    set((s) => ({
-      notifications: s.notifications.map((n) =>
-        n.id === id ? { ...n, requestStatus: action, read: true } : n
-      ),
-    })),
-}))
+      handleRequest: (id, action) =>
+        set((s) => ({
+          notifications: s.notifications.map((n) =>
+            n.id === id ? { ...n, requestStatus: action, read: true } : n
+          ),
+        })),
+
+      reset: () => set({ notifications: MOCK_NOTIFS }),
+    }),
+    {
+      name: 'shixi-notif',
+      storage: createJSONStorage(() => userAwareStorage),
+      partialize: (s) => ({ notifications: s.notifications }),
+    }
+  )
+)
 
 export default useNotifStore

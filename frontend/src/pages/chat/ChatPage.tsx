@@ -12,6 +12,7 @@ import useChatStore, { Message, Group } from '../../store/chatStore'
 import useForumStore from '../../store/forumStore'
 import { ALL_FORUMS } from '../../data/forums'
 import { useSidebarHover } from '../../context/SidebarContext'
+import { useScrollRestore } from '../../hooks/useScrollRestore'
 
 const PINYIN_MAP: Record<string, string> = {
   '张': 'Z', '李': 'L', '王': 'W', '陈': 'C', '刘': 'L', '赵': 'Z', '孙': 'S',
@@ -124,6 +125,10 @@ export default function ChatPage() {
   const [inviteSelectedForum, setInviteSelectedForum] = useState<number | null>(null)
 
   const messagesEndRef = useRef<HTMLDivElement>(null)
+  const messagesBoxRef = useRef<HTMLDivElement>(null)
+  const friendListScrollRef = useRef<HTMLDivElement>(null)
+  const prevConvIdRef = useRef<string>('')
+  useScrollRestore('/chat-friends', friendListScrollRef)
   const friendMap = Object.fromEntries(friends.map((f) => [f.id, f]))
   const joinedForums = ALL_FORUMS.filter((f) => joinedIds.includes(f.id))
   const filteredFriends = friends.filter((f) => f.name.includes(friendSearch))
@@ -134,7 +139,16 @@ export default function ChatPage() {
   const currentMessages: Message[] = messages[currentId] ?? []
 
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+    const box = messagesBoxRef.current
+    if (!box) return
+    if (currentId !== prevConvIdRef.current) {
+      // 切换会话：瞬间跳到底部，不播动画
+      box.scrollTop = box.scrollHeight
+      prevConvIdRef.current = currentId
+    } else {
+      // 发送新消息：平滑滚动
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+    }
   }, [activeConv, messages])
 
   // ── 选中会话 ──
@@ -295,7 +309,7 @@ export default function ChatPage() {
           />
         </div>
 
-        <div style={{ flex: 1, overflowY: 'auto' }}>
+        <div ref={friendListScrollRef} style={{ flex: 1, overflowY: 'auto' }}>
           {/* 群聊区 */}
           {groups.filter((g) => !friendSearch || g.name.includes(friendSearch)).length > 0 && (
             <>
@@ -418,7 +432,7 @@ export default function ChatPage() {
           </div>
 
           {/* 消息记录 */}
-          <div style={{ flex: 15, overflowY: 'auto', padding: '20px 24px 28px', display: 'flex', flexDirection: 'column', gap: 12, background: '#f0f2f8' }}>
+          <div ref={messagesBoxRef} style={{ flex: 15, overflowY: 'auto', padding: '20px 24px 28px', display: 'flex', flexDirection: 'column', gap: 12, background: '#f0f2f8' }}>
             {currentMessages.map((msg) => {
               const isMe = msg.senderId === 'me'
               const sender = !isMe ? (friendMap[msg.senderId] ?? null) : null

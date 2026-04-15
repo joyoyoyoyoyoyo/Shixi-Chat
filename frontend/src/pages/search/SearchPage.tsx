@@ -1,8 +1,9 @@
-import { useState } from 'react'
+import { useState, useRef } from 'react'
 import { Input, Tag, Button } from 'antd'
 import { SearchOutlined, TeamOutlined, FileTextOutlined, CheckOutlined, PlusOutlined } from '@ant-design/icons'
 import { ALL_FORUMS } from '../../data/forums'
 import useForumStore from '../../store/forumStore'
+import { useScrollRestore } from '../../hooks/useScrollRestore'
 
 const INDUSTRY_COLORS: Record<string, string> = {
   IT: 'blue', 金融: 'gold', 医疗: 'green', 教育: 'purple', 零售: 'orange', 制造: 'cyan',
@@ -11,6 +12,8 @@ const INDUSTRY_COLORS: Record<string, string> = {
 export default function SearchPage() {
   const [keyword, setKeyword] = useState('')
   const { joinedIds, join, leave } = useForumStore()
+  const scrollRef = useRef<HTMLDivElement>(null)
+  useScrollRestore('/search', scrollRef)
 
   const results = keyword.trim()
     ? ALL_FORUMS.filter(
@@ -39,7 +42,7 @@ export default function SearchPage() {
       </div>
 
       {/* 结果区域 */}
-      <div style={{ flex: 1, overflowY: 'auto', padding: '24px 40px' }}>
+      <div ref={scrollRef} style={{ flex: 1, overflowY: 'auto', padding: '24px 40px' }}>
         {results.length === 0 ? (
           <div style={{ textAlign: 'center', marginTop: 120, color: '#9ca3af', fontSize: 14 }}>
             这个话题有待挖掘

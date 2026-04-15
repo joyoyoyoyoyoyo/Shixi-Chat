@@ -1,4 +1,5 @@
 import { useState, useRef } from 'react'
+import { useScrollRestore } from '../../hooks/useScrollRestore'
 import { createPortal } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
 import { Tag, Button, Badge, Input } from 'antd'
@@ -47,6 +48,10 @@ export default function ForumPage() {
   const [bellPos, setBellPos] = useState({ top: 0, left: 0 })
   const [activeTab, setActiveTab] = useState<NotifTab>('like')
   const bellRef = useRef<HTMLButtonElement>(null)
+  const feedScrollRef = useRef<HTMLDivElement>(null)
+  const navScrollRef  = useRef<HTMLDivElement>(null)
+  useScrollRestore('/forum-feed', feedScrollRef)
+  useScrollRestore('/forum-nav',  navScrollRef)
 
   const unreadCount = notifications.filter((n) => !n.read).length
   const joinedForums = ALL_FORUMS.filter((f) => joinedIds.includes(f.id))
@@ -97,7 +102,7 @@ export default function ForumPage() {
           </Badge>
         </div>
 
-        <div style={{ flex: 1, overflowY: 'auto', padding: '8px 0' }}>
+        <div ref={navScrollRef} style={{ flex: 1, overflowY: 'auto', padding: '8px 0' }}>
           <div
             className={`forum-nav-item ${activeForumId === 'all' ? 'forum-nav-item-active' : ''}`}
             style={{ padding: '10px 16px' }}
@@ -168,7 +173,7 @@ export default function ForumPage() {
         </div>
 
         {/* 帖子流 */}
-        <div style={{ flex: 1, overflowY: 'auto', padding: '20px 32px', display: 'flex', flexDirection: 'column', gap: 16 }}>
+        <div ref={feedScrollRef} style={{ flex: 1, overflowY: 'auto', padding: '20px 32px', display: 'flex', flexDirection: 'column', gap: 16 }}>
           {visiblePosts.length === 0 ? (
             <div style={{ textAlign: 'center', marginTop: 80, color: '#9ca3af', fontSize: 14 }}>
               暂无内容，去发现页加入更多论坛吧

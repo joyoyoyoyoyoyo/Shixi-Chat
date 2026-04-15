@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { persist, createJSONStorage } from 'zustand/middleware'
+import { userAwareStorage } from '../utils/userStorage'
 
 export interface Message {
   id: string
@@ -89,6 +90,7 @@ interface ChatState {
   clearFriendUnread: (friendId: string) => void
   clearNavUnread: () => void
   addGroup: (group: Group) => void
+  reset: () => void
 }
 
 const useChatStore = create<ChatState>()(
@@ -114,10 +116,17 @@ const useChatStore = create<ChatState>()(
 
       addGroup: (group) =>
         set((s) => ({ groups: [...s.groups, group] })),
+
+      reset: () => set({
+        messages: INITIAL_MESSAGES,
+        groups: INITIAL_GROUPS,
+        unreadMap: computeUnreadMap(INITIAL_MESSAGES),
+        unreadTotal: Object.values(computeUnreadMap(INITIAL_MESSAGES)).reduce((a, b) => a + b, 0),
+      }),
     }),
     {
-      name: 'shixi-chat-messages',
-      storage: createJSONStorage(() => localStorage),
+      name: 'shixi-chat',
+      storage: createJSONStorage(() => userAwareStorage),
       partialize: (state) => ({ messages: state.messages, groups: state.groups }),
       onRehydrateStorage: () => (state) => {
         if (state) {

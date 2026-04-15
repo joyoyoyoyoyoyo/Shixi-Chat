@@ -1,3 +1,4 @@
+import { useEffect } from 'react'
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import AuthPage from './pages/auth/AuthPage'
 import MainLayout from './layouts/MainLayout'
@@ -6,6 +7,34 @@ import ChatPage from './pages/chat/ChatPage'
 import ForumPage from './pages/forum/ForumPage'
 import ProfilePage from './pages/profile/ProfilePage'
 import useAuthStore from './store/authStore'
+import useChatStore from './store/chatStore'
+import useForumStore from './store/forumStore'
+import useNotifStore from './store/notificationStore'
+import { setCurrentUserId } from './utils/userStorage'
+
+// 监听登录/登出，切换用户数据
+function UserDataSync() {
+  const user = useAuthStore((s) => s.user)
+
+  useEffect(() => {
+    if (user?.id) {
+      // 设置用户 ID → 之后的 storage 读写都走 key:userId
+      setCurrentUserId(user.id)
+      // 重新从 localStorage 加载该用户的数据
+      useChatStore.persist.rehydrate()
+      useForumStore.persist.rehydrate()
+      useNotifStore.persist.rehydrate()
+    } else {
+      // 登出：清除 ID，将所有 store 恢复初始状态
+      setCurrentUserId(null)
+      useChatStore.getState().reset()
+      useForumStore.getState().reset()
+      useNotifStore.getState().reset()
+    }
+  }, [user?.id])
+
+  return null
+}
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const token = useAuthStore((s) => s.token)
@@ -17,6 +46,7 @@ export default function App() {
 
   return (
     <BrowserRouter>
+      <UserDataSync />
       <Routes>
         <Route path="/auth" element={token ? <Navigate to="/search" replace /> : <AuthPage />} />
         <Route
