@@ -6,6 +6,9 @@ const { sendVerificationCode } = require('../../services/emailService');
 const generateCode = () =>
   Math.floor(100000 + Math.random() * 900000).toString();
 
+const generateUserId = () =>
+  Math.floor(10000000000 + Math.random() * 90000000000).toString();
+
 const signToken = (userId) =>
   jwt.sign({ id: userId }, process.env.JWT_SECRET, { expiresIn: '7d' });
 
@@ -91,6 +94,12 @@ const login = async (req, res) => {
     const ok = await user.comparePassword(password);
     if (!ok) return res.status(401).json({ message: '邮箱或密码错误' });
 
+    // 老账号没有 userId，登录时自动补充
+    if (!user.userId) {
+      user.userId = generateUserId();
+      await user.save();
+    }
+
     const token = signToken(user._id);
     res.json({
       message: '登录成功',
@@ -108,6 +117,13 @@ const getMe = async (req, res) => {
   try {
     const user = await User.findById(req.user.id).select('-password');
     if (!user) return res.status(404).json({ message: '用户不存在' });
+
+    // 老账号没有 userId，自动补充
+    if (!user.userId) {
+      user.userId = generateUserId();
+      await user.save();
+    }
+
     res.json({ user: formatUser(user) });
   } catch (err) {
     res.status(500).json({ message: '获取用户信息失败' });
