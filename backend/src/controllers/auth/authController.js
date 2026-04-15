@@ -9,21 +9,28 @@ const generateCode = () =>
 const signToken = (userId) =>
   jwt.sign({ id: userId }, process.env.JWT_SECRET, { expiresIn: '7d' });
 
+const formatUser = (user) => ({
+  id: user._id,
+  userId: user.userId,
+  username: user.username,
+  email: user.email,
+  avatar: user.avatar,
+});
+
 // POST /api/auth/send-code
 const sendCode = async (req, res) => {
   try {
     const { email } = req.body;
     if (!email) return res.status(400).json({ message: '邮箱不能为空' });
 
-    // 60 秒内只能发一次
     const limitKey = `code_limit:${email}`;
     if (await redis.get(limitKey)) {
       return res.status(429).json({ message: '发送太频繁，请 60 秒后再试' });
     }
 
     const code = generateCode();
-    await redis.setex(`verify_code:${email}`, 300, code); // 5 分钟有效
-    await redis.setex(limitKey, 60, '1');                  // 60 秒冷却
+    await redis.setex(`verify_code:${email}`, 300, code);
+    await redis.setex(limitKey, 60, '1');
 
     await sendVerificationCode(email, code);
     res.json({ message: '验证码已发送，请查收邮件' });
@@ -42,18 +49,15 @@ const register = async (req, res) => {
       return res.status(400).json({ message: '请填写所有必填项' });
     }
 
-    // 校验验证码
     const savedCode = await redis.get(`verify_code:${email}`);
     if (!savedCode || savedCode !== code) {
       return res.status(400).json({ message: '验证码错误或已过期' });
     }
 
-    // 检查重复
-    const existing = await User.findOne({ $or: [{ email }, { username }] });
+    // Only check email uniqueness (username can be duplicate)
+    const existing = await User.findOne({ email });
     if (existing) {
-      if (existing.email === email)
-        return res.status(400).json({ message: '该邮箱已注册' });
-      return res.status(400).json({ message: '用户名已被占用' });
+      return res.status(400).json({ message: '该邮箱已注册' });
     }
 
     const user = new User({ username, email, password });
@@ -64,7 +68,7 @@ const register = async (req, res) => {
     res.status(201).json({
       message: '注册成功',
       token,
-      user: { id: user._id, username: user.username, email: user.email, avatar: user.avatar },
+      user: formatUser(user),
     });
   } catch (err) {
     console.error('register error:', err);
@@ -78,20 +82,20 @@ const login = async (req, res) => {
     const { email, password } = req.body;
 
     if (!email || !password) {
-      return res.status(400).json({ message: '请输入邮箱和密码' });
+      return res.status(400).json({ message: '请填写邮箱和密码' });
     }
 
     const user = await User.findOne({ email });
-    if (!user) return res.status(400).json({ message: '账号不存在' });
+    if (!user) return res.status(401).json({ message: '邮箱或密码错误' });
 
-    const isMatch = await user.comparePassword(password);
-    if (!isMatch) return res.status(400).json({ message: '密码错误' });
+    const ok = await user.comparePassword(password);
+    if (!ok) return res.status(401).json({ message: '邮箱或密码错误' });
 
     const token = signToken(user._id);
     res.json({
       message: '登录成功',
       token,
-      user: { id: user._id, username: user.username, email: user.email, avatar: user.avatar },
+      user: formatUser(user),
     });
   } catch (err) {
     console.error('login error:', err);
@@ -99,11 +103,12 @@ const login = async (req, res) => {
   }
 };
 
-// GET /api/auth/me  (需要登录)
+// GET /api/auth/me
 const getMe = async (req, res) => {
   try {
     const user = await User.findById(req.user.id).select('-password');
-    res.json(user);
+    if (!user) return res.status(404).json({ message: '用户不存在' });
+    res.json({ user: formatUser(user) });
   } catch (err) {
     res.status(500).json({ message: '获取用户信息失败' });
   }

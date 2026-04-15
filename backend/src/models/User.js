@@ -1,14 +1,23 @@
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 
+// Generate 11-digit unique userId
+const generateUserId = () =>
+  Math.floor(10000000000 + Math.random() * 90000000000).toString();
+
 const userSchema = new mongoose.Schema({
+  userId: {
+    type: String,
+    unique: true,
+    default: generateUserId,
+  },
   username: {
     type: String,
     required: true,
-    unique: true,
     trim: true,
     minlength: 2,
     maxlength: 20,
+    // NO unique constraint - duplicate usernames allowed
   },
   email: {
     type: String,
@@ -37,14 +46,12 @@ const userSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now },
 });
 
-// 保存前自动加密密码
 userSchema.pre('save', async function (next) {
   if (!this.isModified('password')) return next();
   this.password = await bcrypt.hash(this.password, 10);
   next();
 });
 
-// 验证密码方法
 userSchema.methods.comparePassword = function (password) {
   return bcrypt.compare(password, this.password);
 };

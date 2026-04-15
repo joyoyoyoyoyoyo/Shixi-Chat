@@ -12,6 +12,7 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 app.use('/api/auth', require('./routes/authRoutes'));
+app.use('/api/friends', require('./routes/friendRoutes'));
 app.use('/uploads', express.static('uploads'));
 
 const PORT = process.env.PORT || 5000;

@@ -1,11 +1,12 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useCallback } from 'react'
 import { createPortal } from 'react-dom'
-import { Input, Button, Tooltip, Badge, Modal, Popover, message, Checkbox, Tabs } from 'antd'
+import { Input, Button, Tooltip, Badge, Modal, Popover, message, Checkbox, Tabs, Spin, Empty, Tag } from 'antd'
 import {
   SmileOutlined, FileOutlined, PictureOutlined, PhoneOutlined, VideoCameraOutlined,
   MoreOutlined, SendOutlined, SearchOutlined, SettingOutlined, EllipsisOutlined,
   MessageOutlined, StopOutlined, DeleteOutlined, PlusOutlined, UserAddOutlined,
   UsergroupAddOutlined, TeamOutlined, ShareAltOutlined, UserSwitchOutlined,
+  CheckOutlined, CloseOutlined, CopyOutlined,
 } from '@ant-design/icons'
 import useAuthStore from '../../store/authStore'
 import useChatStore, { Message, Group } from '../../store/chatStore'
@@ -13,7 +14,13 @@ import useForumStore from '../../store/forumStore'
 import { ALL_FORUMS } from '../../data/forums'
 import { useSidebarHover } from '../../context/SidebarContext'
 import { useScrollRestore } from '../../hooks/useScrollRestore'
+import {
+  getFriends, deleteFriend as apiDeleteFriend,
+  searchUser, sendFriendRequest, getFriendRequests, respondFriendRequest,
+  ApiFriend, ApiRequest,
+} from '../../api/friends'
 
+// ── 拼音首字母映射 ──
 const PINYIN_MAP: Record<string, string> = {
   '张': 'Z', '李': 'L', '王': 'W', '陈': 'C', '刘': 'L', '赵': 'Z', '孙': 'S',
   '周': 'Z', '吴': 'W', '郑': 'Z', '林': 'L', '黄': 'H', '徐': 'X', '曹': 'C', '韩': 'H',
@@ -25,32 +32,36 @@ function groupByInitial(friends: Friend[]) {
   return Object.entries(groups).sort(([a], [b]) => a.localeCompare(b))
 }
 
-interface Friend {
-  id: string; name: string; initial: string; color: string
-  lastMessage: string; time: string; online: boolean; unread: number
+// 根据字符串生成固定颜色
+const AVATAR_COLORS = ['#667eea', '#f093fb', '#4facfe', '#43e97b', '#fa709a', '#a18cd1', '#fda085', '#84fab0', '#f6d365', '#89f7fe', '#f7971e', '#c471ed', '#12c2e9', '#e96c1f', '#56ab2f']
+function colorFromId(id: string) { let h = 0; for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) & 0xffffffff; return AVATAR_COLORS[Math.abs(h) % AVATAR_COLORS.length] }
+
+// 将 API 好友数据映射到本地 Friend 格式
+// 注意：Mongoose populate 返回的是 _id 字段，axios 序列化后变成 id（JSON.parse 自动映射）
+function apiFriendToFriend(f: ApiFriend): Friend {
+  const id = (f as any)._id ?? f.id  // 兼容两种情况
+  return {
+    id: String(id),
+    userId: f.userId,
+    name: f.username,
+    initial: getInitial(f.username),
+    color: colorFromId(String(id)),
+    online: false,
+  }
 }
 
-const MOCK_FRIENDS: Friend[] = [
-  { id: '1',  name: '张小明', initial: '张', color: '#667eea', lastMessage: '', time: '10:32', online: true,  unread: 2 },
-  { id: '2',  name: '李晓雯', initial: '李', color: '#f093fb', lastMessage: '', time: '09:15', online: true,  unread: 0 },
-  { id: '3',  name: '王大伟', initial: '王', color: '#4facfe', lastMessage: '', time: '昨天',  online: false, unread: 1 },
-  { id: '4',  name: '陈思思', initial: '陈', color: '#43e97b', lastMessage: '', time: '昨天',  online: false, unread: 0 },
-  { id: '5',  name: '刘浩然', initial: '刘', color: '#fa709a', lastMessage: '', time: '周一',  online: true,  unread: 0 },
-  { id: '6',  name: '赵雨桐', initial: '赵', color: '#a18cd1', lastMessage: '', time: '周一',  online: true,  unread: 3 },
-  { id: '7',  name: '孙浩宇', initial: '孙', color: '#fda085', lastMessage: '', time: '周二',  online: false, unread: 0 },
-  { id: '8',  name: '周静怡', initial: '周', color: '#84fab0', lastMessage: '', time: '周二',  online: true,  unread: 1 },
-  { id: '9',  name: '吴俊杰', initial: '吴', color: '#f6d365', lastMessage: '', time: '周三',  online: false, unread: 0 },
-  { id: '10', name: '郑梦琪', initial: '郑', color: '#89f7fe', lastMessage: '', time: '周三',  online: true,  unread: 2 },
-  { id: '11', name: '林思远', initial: '林', color: '#f7971e', lastMessage: '', time: '周四',  online: false, unread: 0 },
-  { id: '12', name: '黄子涵', initial: '黄', color: '#c471ed', lastMessage: '', time: '周四',  online: true,  unread: 0 },
-  { id: '13', name: '徐嘉怡', initial: '徐', color: '#12c2e9', lastMessage: '', time: '上周',  online: false, unread: 0 },
-  { id: '14', name: '曹子墨', initial: '曹', color: '#e96c1f', lastMessage: '', time: '上周',  online: false, unread: 0 },
-  { id: '15', name: '韩冰洁', initial: '韩', color: '#56ab2f', lastMessage: '', time: '更早',  online: false, unread: 0 },
-]
+interface Friend {
+  id: string       // MongoDB ObjectId，作为会话 key
+  userId: string   // 11位数字 ID
+  name: string
+  initial: string
+  color: string
+  online: boolean
+}
 
 type ActiveConv = { type: 'friend'; data: Friend } | { type: 'group'; data: Group }
 
-// ── 更多菜单选项 ──
+// ── 更多菜单 ──
 function MoreMenu({
   friend, onChat, onShare, onInvite, onBlock, onUnblock, onDelete, isBlocked,
 }: {
@@ -95,9 +106,11 @@ export default function ChatPage() {
 
   useEffect(() => { clearNavUnread() }, [])
 
-  const [friends, setFriends] = useState<Friend[]>(MOCK_FRIENDS)
+  // ── 好友列表（从后端加载）──
+  const [friends, setFriends] = useState<Friend[]>([])
+  const [friendsLoading, setFriendsLoading] = useState(true)
   const [blockedIds, setBlockedIds] = useState<Set<string>>(new Set())
-  const [activeConv, setActiveConv] = useState<ActiveConv>({ type: 'friend', data: MOCK_FRIENDS[0] })
+  const [activeConv, setActiveConv] = useState<ActiveConv | null>(null)
   const [inputText, setInputText] = useState('')
   const [friendSearch, setFriendSearch] = useState('')
   const [friendListOpen, setFriendListOpen] = useState(false)
@@ -108,6 +121,18 @@ export default function ChatPage() {
   const plusBtnRef = useRef<HTMLSpanElement>(null)
   const autoCloseRef = useRef<number | null>(null)
   const leaveRef = useRef<number | null>(null)
+
+  // 添加好友弹窗
+  const [addFriendOpen, setAddFriendOpen] = useState(false)
+  const [addFriendTab, setAddFriendTab] = useState('search')
+  const [searchQuery, setSearchQuery] = useState('')
+  const [searchResult, setSearchResult] = useState<(ApiFriend & { isFriend: boolean; isPending: boolean }) | null>(null)  // merged from res.data.user + res.data.isFriend/isPending
+  const [searchLoading, setSearchLoading] = useState(false)
+  const [searchError, setSearchError] = useState('')
+  const [sendingRequest, setSendingRequest] = useState(false)
+  const [requests, setRequests] = useState<ApiRequest[]>([])
+  const [requestsLoading, setRequestsLoading] = useState(false)
+  const [respondingId, setRespondingId] = useState<string | null>(null)
 
   // 创建群聊弹窗
   const [createGroupOpen, setCreateGroupOpen] = useState(false)
@@ -129,6 +154,7 @@ export default function ChatPage() {
   const friendListScrollRef = useRef<HTMLDivElement>(null)
   const prevConvIdRef = useRef<string>('')
   useScrollRestore('/chat-friends', friendListScrollRef)
+
   const friendMap = Object.fromEntries(friends.map((f) => [f.id, f]))
   const joinedForums = ALL_FORUMS.filter((f) => joinedIds.includes(f.id))
   const filteredFriends = friends.filter((f) => f.name.includes(friendSearch))
@@ -138,15 +164,33 @@ export default function ChatPage() {
   const currentId = activeConv?.data.id ?? ''
   const currentMessages: Message[] = messages[currentId] ?? []
 
+  // ── 加载好友列表 ──
+  const loadFriends = useCallback(async () => {
+    try {
+      setFriendsLoading(true)
+      const res = await getFriends()
+      const list = res.data.friends.map(apiFriendToFriend)
+      setFriends(list)
+      if (!activeConv && list.length > 0) {
+        setActiveConv({ type: 'friend', data: list[0] })
+      }
+    } catch {
+      // 静默失败
+    } finally {
+      setFriendsLoading(false)
+    }
+  }, [])
+
+  useEffect(() => { loadFriends() }, [loadFriends])
+
+  // ── 消息区滚动 ──
   useEffect(() => {
     const box = messagesBoxRef.current
     if (!box) return
     if (currentId !== prevConvIdRef.current) {
-      // 切换会话：瞬间跳到底部，不播动画
       box.scrollTop = box.scrollHeight
       prevConvIdRef.current = currentId
     } else {
-      // 发送新消息：平滑滚动
       messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
     }
   }, [activeConv, messages])
@@ -191,19 +235,87 @@ export default function ChatPage() {
     leaveRef.current = window.setTimeout(() => setPlusMenuOpen(false), 500)
   }
 
+  // ── 搜索用户 ──
+  const handleSearch = async () => {
+    const q = searchQuery.trim()
+    if (!q) { setSearchError('请输入用户 ID 或邮箱'); return }
+    setSearchLoading(true)
+    setSearchResult(null)
+    setSearchError('')
+    try {
+      const res = await searchUser(q)
+      setSearchResult({ ...res.data.user, isFriend: res.data.isFriend, isPending: res.data.isPending })
+    } catch (err: any) {
+      setSearchError(err?.response?.data?.message ?? '未找到该用户')
+    } finally {
+      setSearchLoading(false)
+    }
+  }
+
+  // ── 发送好友请求 ──
+  const handleSendRequest = async (toId: string) => {
+    setSendingRequest(true)
+    try {
+      await sendFriendRequest(toId)
+      message.success('好友申请已发送')
+      setSearchResult((prev) => prev ? { ...prev, isPending: true } : prev)
+    } catch (err: any) {
+      message.error(err?.response?.data?.message ?? '发送失败')
+    } finally {
+      setSendingRequest(false)
+    }
+  }
+
+  // ── 加载好友请求 ──
+  const loadRequests = async () => {
+    setRequestsLoading(true)
+    try {
+      const res = await getFriendRequests()
+      setRequests(res.data.requests)
+    } catch {
+      // 静默
+    } finally {
+      setRequestsLoading(false)
+    }
+  }
+
+  // ── 接受 / 拒绝好友请求 ──
+  const handleRespond = async (requestId: string, action: 'accept' | 'reject') => {
+    setRespondingId(requestId)
+    try {
+      await respondFriendRequest(requestId, action)
+      if (action === 'accept') {
+        message.success('已接受好友申请')
+        await loadFriends()
+      } else {
+        message.info('已拒绝申请')
+      }
+      setRequests((prev) => prev.filter((r) => r.id !== requestId))
+    } catch (err: any) {
+      message.error(err?.response?.data?.message ?? '操作失败')
+    } finally {
+      setRespondingId(null)
+    }
+  }
+
   // ── 删除 / 拉黑 ──
   const handleDelete = (friend: Friend) => {
     Modal.confirm({
       title: `删除好友 ${friend.name}？`,
       content: '删除后将无法接收该好友的消息，聊天记录也会清除。',
       okText: '删除', cancelText: '取消', okButtonProps: { danger: true },
-      onOk: () => {
-        setFriends((prev) => prev.filter((f) => f.id !== friend.id))
-        if (activeConv?.type === 'friend' && activeConv.data.id === friend.id) {
-          const remaining = friends.filter((f) => f.id !== friend.id)
-          setActiveConv(remaining.length > 0 ? { type: 'friend', data: remaining[0] } : { type: 'friend', data: MOCK_FRIENDS[0] })
+      onOk: async () => {
+        try {
+          await apiDeleteFriend(friend.id)
+          setFriends((prev) => prev.filter((f) => f.id !== friend.id))
+          if (activeConv?.type === 'friend' && activeConv.data.id === friend.id) {
+            const remaining = friends.filter((f) => f.id !== friend.id)
+            setActiveConv(remaining.length > 0 ? { type: 'friend', data: remaining[0] } : null)
+          }
+          message.success(`已删除好友 ${friend.name}`)
+        } catch {
+          message.error('删除失败，请稍后重试')
         }
-        message.success(`已删除好友 ${friend.name}`)
       },
     })
   }
@@ -261,7 +373,7 @@ export default function ChatPage() {
     setInviteSelectedForum(null)
   }
 
-  // ── 渲染更多菜单内容（供好友列表和顶部栏共用）──
+  // ── 更多菜单渲染 ──
   const renderMoreMenu = (friend: Friend, withChat?: () => void) => (
     <MoreMenu
       friend={friend}
@@ -340,35 +452,42 @@ export default function ChatPage() {
           )}
 
           {/* 好友区 */}
-          {filteredFriends.map((friend) => (
-            <div key={friend.id}
-              className={`friend-item ${activeConv?.data.id === friend.id ? 'friend-item-active' : ''}`}
-              style={{ padding: sidebarHovered ? '10px 8px' : '10px 16px', transition: 'padding 0.25s', opacity: blockedIds.has(friend.id) ? 0.45 : 1 }}
-              onClick={() => selectFriend(friend)}
-            >
-              <Badge dot={friend.online && !blockedIds.has(friend.id)} color="#52c41a" offset={[-2, 36]}>
-                <div className="friend-avatar" style={{ background: friend.color }}>{friend.initial}</div>
-              </Badge>
-              <div style={{ flex: 1, minWidth: 0, marginLeft: 10 }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <span style={{ fontSize: sidebarHovered ? 12 : 14, fontWeight: 600, color: '#1a1a2e', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', transition: 'font-size 0.25s' }}>
-                    {friend.name}{blockedIds.has(friend.id) && <span style={{ fontSize: 10, color: '#f59e0b', marginLeft: 4 }}>已拉黑</span>}
-                  </span>
-                  <span style={{ fontSize: sidebarHovered ? 10 : 11, color: '#9ca3af', flexShrink: 0, marginLeft: 4 }}>{friend.time}</span>
-                </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 2 }}>
-                  <span style={{ fontSize: 12, color: '#9ca3af', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: sidebarHovered ? 50 : 140 }}>
-                    {(() => { const m = messages[friend.id]; return m && m.length > 0 ? m[m.length - 1].text : '' })()}
-                  </span>
-                  {(unreadMap[friend.id] ?? 0) > 0 && (
-                    <div style={{ minWidth: 18, height: 18, borderRadius: 9, background: '#667eea', color: '#fff', fontSize: 11, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0 4px' }}>
-                      {unreadMap[friend.id]}
-                    </div>
-                  )}
+          {friendsLoading ? (
+            <div style={{ textAlign: 'center', padding: '30px 0' }}><Spin size="small" /></div>
+          ) : filteredFriends.length === 0 ? (
+            <div style={{ textAlign: 'center', padding: '30px 16px', color: '#9ca3af', fontSize: 13 }}>
+              {friends.length === 0 ? '暂无好友，点击 + 添加' : '没有匹配的好友'}
+            </div>
+          ) : (
+            filteredFriends.map((friend) => (
+              <div key={friend.id}
+                className={`friend-item ${activeConv?.data.id === friend.id ? 'friend-item-active' : ''}`}
+                style={{ padding: sidebarHovered ? '10px 8px' : '10px 16px', transition: 'padding 0.25s', opacity: blockedIds.has(friend.id) ? 0.45 : 1 }}
+                onClick={() => selectFriend(friend)}
+              >
+                <Badge dot={friend.online && !blockedIds.has(friend.id)} color="#52c41a" offset={[-2, 36]}>
+                  <div className="friend-avatar" style={{ background: friend.color }}>{friend.initial}</div>
+                </Badge>
+                <div style={{ flex: 1, minWidth: 0, marginLeft: 10 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span style={{ fontSize: sidebarHovered ? 12 : 14, fontWeight: 600, color: '#1a1a2e', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', transition: 'font-size 0.25s' }}>
+                      {friend.name}{blockedIds.has(friend.id) && <span style={{ fontSize: 10, color: '#f59e0b', marginLeft: 4 }}>已拉黑</span>}
+                    </span>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 2 }}>
+                    <span style={{ fontSize: 12, color: '#9ca3af', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: sidebarHovered ? 50 : 140 }}>
+                      {(() => { const m = messages[friend.id]; return m && m.length > 0 ? m[m.length - 1].text : '' })()}
+                    </span>
+                    {(unreadMap[friend.id] ?? 0) > 0 && (
+                      <div style={{ minWidth: 18, height: 18, borderRadius: 9, background: '#667eea', color: '#fff', fontSize: 11, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0 4px' }}>
+                        {unreadMap[friend.id]}
+                      </div>
+                    )}
+                  </div>
                 </div>
               </div>
-            </div>
-          ))}
+            ))
+          )}
         </div>
       </div>
 
@@ -487,7 +606,7 @@ export default function ChatPage() {
         </div>
       ) : (
         <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#9ca3af', fontSize: 14 }}>
-          选择一个好友或群聊开始聊天
+          {friendsLoading ? <Spin /> : '选择一个好友或群聊开始聊天'}
         </div>
       )}
 
@@ -497,7 +616,17 @@ export default function ChatPage() {
           style={{ position: 'fixed', top: plusMenuPos.top, left: plusMenuPos.left, background: '#fff', borderRadius: 8, boxShadow: '0 4px 20px rgba(0,0,0,0.12)', border: '1px solid #f0f0f0', padding: '4px 0', minWidth: 140, zIndex: 9999 }}
         >
           {[
-            { icon: <UserAddOutlined />, label: '添加好友', action: () => { setPlusMenuOpen(false); message.info('添加好友功能开发中') } },
+            {
+              icon: <UserAddOutlined />, label: '添加好友',
+              action: () => {
+                setPlusMenuOpen(false)
+                setAddFriendOpen(true)
+                setAddFriendTab('search')
+                setSearchQuery('')
+                setSearchResult(null)
+                setSearchError('')
+              },
+            },
             { icon: <UsergroupAddOutlined />, label: '创建群聊', action: () => { setPlusMenuOpen(false); setCreateGroupOpen(true) } },
           ].map((item) => (
             <div key={item.label} onClick={item.action}
@@ -511,6 +640,133 @@ export default function ChatPage() {
         </div>,
         document.body
       )}
+
+      {/* ── 添加好友弹窗 ── */}
+      <Modal
+        title="添加好友"
+        open={addFriendOpen}
+        onCancel={() => setAddFriendOpen(false)}
+        footer={null}
+        width={440}
+      >
+        {/* 展示自己的 ID */}
+        {user?.userId && (
+          <div style={{ background: '#f5f6fa', borderRadius: 8, padding: '10px 14px', marginBottom: 16, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <div>
+              <span style={{ fontSize: 12, color: '#9ca3af' }}>我的 ID（分享给好友）</span>
+              <div style={{ fontSize: 15, fontWeight: 700, color: '#1a1a2e', letterSpacing: 2 }}>{user.userId}</div>
+            </div>
+            <Button size="small" icon={<CopyOutlined />} type="text"
+              onClick={() => { navigator.clipboard.writeText(user.userId); message.success('ID 已复制') }}
+            >复制</Button>
+          </div>
+        )}
+
+        <Tabs
+          activeKey={addFriendTab}
+          onChange={(k) => {
+            setAddFriendTab(k)
+            if (k === 'requests') loadRequests()
+          }}
+          items={[
+            {
+              key: 'search',
+              label: '搜索用户',
+              children: (
+                <div>
+                  <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
+                    <Input
+                      placeholder="输入 11 位用户 ID 或邮箱"
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      onPressEnter={handleSearch}
+                      prefix={<SearchOutlined style={{ color: '#9ca3af' }} />}
+                      style={{ borderRadius: 8 }}
+                    />
+                    <Button type="primary" onClick={handleSearch} loading={searchLoading}
+                      style={{ background: '#667eea', border: 'none', borderRadius: 8 }}>
+                      搜索
+                    </Button>
+                  </div>
+
+                  {searchLoading && <div style={{ textAlign: 'center', padding: '20px 0' }}><Spin /></div>}
+
+                  {searchError && !searchLoading && (
+                    <div style={{ textAlign: 'center', color: '#9ca3af', padding: '20px 0', fontSize: 14 }}>{searchError}</div>
+                  )}
+
+                  {searchResult && !searchLoading && (
+                    <div style={{ border: '1px solid #f0f0f0', borderRadius: 12, padding: '16px 20px', display: 'flex', alignItems: 'center', gap: 14 }}>
+                      <div style={{ width: 48, height: 48, borderRadius: 12, background: colorFromId(searchResult.id), display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontSize: 20, fontWeight: 700, flexShrink: 0 }}>
+                        {getInitial(searchResult.username)}
+                      </div>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontSize: 15, fontWeight: 600, color: '#1a1a2e' }}>{searchResult.username}</div>
+                        <div style={{ fontSize: 12, color: '#9ca3af', marginTop: 2 }}>ID: {searchResult.userId}</div>
+                        {searchResult.isFriend && <Tag color="green" style={{ marginTop: 4 }}>已是好友</Tag>}
+                      </div>
+                      {!searchResult.isFriend && (
+                        searchResult.isPending ? (
+                          <Button disabled style={{ borderRadius: 20 }}>已申请</Button>
+                        ) : (
+                          <Button type="primary" loading={sendingRequest}
+                            onClick={() => handleSendRequest(searchResult.id)}
+                            style={{ background: '#667eea', border: 'none', borderRadius: 20 }}>
+                            添加好友
+                          </Button>
+                        )
+                      )}
+                      {searchResult.isFriend && (
+                        <Button onClick={() => {
+                          const f = friends.find(f => f.id === searchResult.id)
+                          if (f) { selectFriend(f); setAddFriendOpen(false) }
+                        }} style={{ borderRadius: 20 }}>发消息</Button>
+                      )}
+                    </div>
+                  )}
+                </div>
+              ),
+            },
+            {
+              key: 'requests',
+              label: '好友申请',
+              children: (
+                <div style={{ minHeight: 120 }}>
+                  {requestsLoading && <div style={{ textAlign: 'center', padding: '30px 0' }}><Spin /></div>}
+                  {!requestsLoading && requests.length === 0 && (
+                    <Empty description="暂无好友申请" style={{ padding: '20px 0' }} />
+                  )}
+                  {!requestsLoading && requests.map((req) => (
+                    <div key={req.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 4px', borderBottom: '1px solid #f5f5f5' }}>
+                      <div style={{ width: 42, height: 42, borderRadius: 10, background: colorFromId((req.from as any)._id ?? req.from.id), display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontSize: 17, fontWeight: 700, flexShrink: 0 }}>
+                        {getInitial(req.from.username)}
+                      </div>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontSize: 14, fontWeight: 600, color: '#1a1a2e' }}>{req.from.username}</div>
+                        <div style={{ fontSize: 12, color: '#9ca3af' }}>ID: {req.from.userId}</div>
+                      </div>
+                      <div style={{ display: 'flex', gap: 8 }}>
+                        <Button
+                          size="small" type="primary" icon={<CheckOutlined />}
+                          loading={respondingId === req.id}
+                          onClick={() => handleRespond(req.id, 'accept')}
+                          style={{ background: '#667eea', border: 'none', borderRadius: 16 }}
+                        >接受</Button>
+                        <Button
+                          size="small" icon={<CloseOutlined />}
+                          loading={respondingId === req.id}
+                          onClick={() => handleRespond(req.id, 'reject')}
+                          style={{ borderRadius: 16 }}
+                        >拒绝</Button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ),
+            },
+          ]}
+        />
+      </Modal>
 
       {/* ── 好友列表弹窗 ── */}
       <Modal title="好友列表" open={friendListOpen} onCancel={() => setFriendListOpen(false)} footer={null} width={400}
@@ -540,7 +796,7 @@ export default function ChatPage() {
                         <div style={{ fontSize: 14, fontWeight: 600, color: '#1a1a2e' }}>
                           {friend.name}{blockedIds.has(friend.id) && <span style={{ fontSize: 10, color: '#f59e0b', marginLeft: 6 }}>已拉黑</span>}
                         </div>
-                        <div style={{ fontSize: 12, color: friend.online ? '#52c41a' : '#9ca3af' }}>{friend.online ? '在线' : '离线'}</div>
+                        <div style={{ fontSize: 12, color: '#9ca3af' }}>ID: {friend.userId}</div>
                       </div>
                       <Popover trigger="click" placement="left"
                         content={renderMoreMenu(friend, () => { selectFriend(friend); setFriendListOpen(false) })}
@@ -577,6 +833,7 @@ export default function ChatPage() {
         <div>
           <div style={{ fontSize: 13, color: '#6b7280', marginBottom: 8 }}>选择成员（{selectedForGroup.length} 人已选）</div>
           <div style={{ maxHeight: 280, overflowY: 'auto', border: '1px solid #f0f0f0', borderRadius: 8 }}>
+            {friends.length === 0 && <div style={{ textAlign: 'center', color: '#9ca3af', padding: '20px 0', fontSize: 13 }}>暂无好友可选</div>}
             {friends.map((friend) => (
               <div key={friend.id} style={{ display: 'flex', alignItems: 'center', padding: '10px 16px', cursor: 'pointer', transition: 'background 0.15s' }}
                 onClick={() => setSelectedForGroup((prev) => prev.includes(friend.id) ? prev.filter(id => id !== friend.id) : [...prev, friend.id])}
