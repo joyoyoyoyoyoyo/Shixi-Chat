@@ -1,5 +1,5 @@
 import { useState, useRef } from 'react'
-import { Form, Input, Button, Tabs, message, Space, Modal } from 'antd'
+import { Form, Input, Button, Tabs, message, Space, Modal, Checkbox } from 'antd'
 import {
   UserOutlined,
   LockOutlined,
@@ -15,6 +15,7 @@ export default function AuthPage() {
   const [countdown, setCountdown] = useState(0)
   const [loading, setLoading] = useState(false)
   const [sendingCode, setSendingCode] = useState(false)
+  const [rememberMe, setRememberMe] = useState(false)
   const [termsOpen, setTermsOpen] = useState(false)
   const [privacyOpen, setPrivacyOpen] = useState(false)
   const timerRef = useRef<number | null>(null)
@@ -59,7 +60,7 @@ export default function AuthPage() {
     setLoading(true)
     try {
       const res = await authApi.login(values)
-      setAuth(res.data.token, res.data.user)
+      setAuth(res.data.token, res.data.user, rememberMe)
       message.success('登录成功！')
       navigate('/')
     } catch (err: any) {
@@ -229,7 +230,23 @@ export default function AuthPage() {
                 <Input.Password
                   prefix={<LockOutlined style={{ color: '#9ca3af' }} />}
                   placeholder="请输入密码"
+                  autoComplete="current-password"
                 />
+              </Form.Item>
+
+              <Form.Item style={{ marginBottom: 16 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <Checkbox
+                    checked={rememberMe}
+                    onChange={(e) => setRememberMe(e.target.checked)}
+                    style={{ fontSize: 13, color: '#6b7280' }}
+                  >
+                    记住登录状态
+                  </Checkbox>
+                  <span style={{ fontSize: 12, color: '#9ca3af' }}>
+                    {rememberMe ? '关闭浏览器后仍保持登录' : '关闭浏览器后需重新登录'}
+                  </span>
+                </div>
               </Form.Item>
 
               <Form.Item style={{ marginBottom: 0 }}>

@@ -94,10 +94,14 @@ const login = async (req, res) => {
     const ok = await user.comparePassword(password);
     if (!ok) return res.status(401).json({ message: '邮箱或密码错误' });
 
-    // 老账号没有 userId，登录时自动补充
-    if (!user.userId) {
-      user.userId = generateUserId();
-      await user.save();
+    // 老账号没有 userId（Mongoose default 只在内存生效，需检查 _doc 里的真实值）
+    if (!user._doc.userId) {
+      const newUserId = generateUserId();
+      await User.updateOne(
+        { _id: user._id, userId: { $exists: false } },
+        { $set: { userId: newUserId } }
+      );
+      user.userId = newUserId;
     }
 
     const token = signToken(user._id);
@@ -118,10 +122,14 @@ const getMe = async (req, res) => {
     const user = await User.findById(req.user.id).select('-password');
     if (!user) return res.status(404).json({ message: '用户不存在' });
 
-    // 老账号没有 userId，自动补充
-    if (!user.userId) {
-      user.userId = generateUserId();
-      await user.save();
+    // 老账号没有 userId（Mongoose default 只在内存生效，需检查 _doc 里的真实值）
+    if (!user._doc.userId) {
+      const newUserId = generateUserId();
+      await User.updateOne(
+        { _id: user._id, userId: { $exists: false } },
+        { $set: { userId: newUserId } }
+      );
+      user.userId = newUserId;
     }
 
     res.json({ user: formatUser(user) });

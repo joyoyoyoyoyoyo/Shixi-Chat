@@ -80,7 +80,19 @@ const getRequests = async (req, res) => {
       .populate('from', '_id userId username avatar')
       .sort({ createdAt: -1 });
 
-    res.json({ requests });
+    // 显式格式化，避免 Mongoose virtual id 不进 JSON 的问题
+    res.json({
+      requests: requests.map((r) => ({
+        id: r._id.toString(),
+        from: {
+          id: r.from._id.toString(),
+          userId: r.from.userId,
+          username: r.from.username,
+          avatar: r.from.avatar,
+        },
+        createdAt: r.createdAt,
+      })),
+    });
   } catch (err) {
     res.status(500).json({ message: '获取申请失败' });
   }
@@ -122,7 +134,14 @@ const getFriends = async (req, res) => {
       .populate('friends', '_id userId username avatar')
       .select('friends');
 
-    res.json({ friends: me.friends });
+    res.json({
+      friends: me.friends.map((f) => ({
+        id: f._id.toString(),
+        userId: f.userId,
+        username: f.username,
+        avatar: f.avatar,
+      })),
+    });
   } catch (err) {
     res.status(500).json({ message: '获取好友列表失败' });
   }

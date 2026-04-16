@@ -19,6 +19,7 @@ import {
   searchUser, sendFriendRequest, getFriendRequests, respondFriendRequest,
   ApiFriend, ApiRequest,
 } from '../../api/friends'
+import { postMessage, fetchMessages } from '../../api/messages'
 
 // ── 拼音首字母映射 ──
 const PINYIN_MAP: Record<string, string> = {
@@ -100,7 +101,7 @@ function MoreMenu({
 
 export default function ChatPage() {
   const { user } = useAuthStore()
-  const { messages, groups, unreadMap, sendMessage, clearFriendUnread, clearNavUnread, addGroup } = useChatStore()
+  const { messages, groups, unreadMap, sendMessage, clearFriendUnread, clearNavUnread, addGroup, setFriendRequestCount } = useChatStore()
   const { joinedIds } = useForumStore()
   const sidebarHovered = useSidebarHover()
 
@@ -153,6 +154,8 @@ export default function ChatPage() {
   const messagesBoxRef = useRef<HTMLDivElement>(null)
   const friendListScrollRef = useRef<HTMLDivElement>(null)
   const prevConvIdRef = useRef<string>('')
+  // 记录每个好友会话最后一条消息的时间，用于增量轮询
+  const lastMsgTimeRef = useRef<Record<string, string>>({})
   useScrollRestore('/chat-friends', friendListScrollRef)
 
   const friendMap = Object.fromEntries(friends.map((f) => [f.id, f]))
@@ -163,6 +166,44 @@ export default function ChatPage() {
 
   const currentId = activeConv?.data.id ?? ''
   const currentMessages: Message[] = messages[currentId] ?? []
+
+  // ── API 消息 → chatStore Message 格式 ──
+  const toStoreMsg = useCallback((m: { id: string; senderId: string; text: string; type: string; time: string }): Message => ({
+    id: m.id,
+    senderId: m.senderId === user?.id ? 'me' : m.senderId,
+    text: m.text,
+    time: m.time,
+    type: 'text',
+  }), [user?.id])
+
+  // ── 从后端加载某好友的全量消息 ──
+  const loadMessages = useCallback(async (friendId: string) => {
+    try {
+      const res = await fetchMessages(friendId)
+      const msgs = res.data.messages
+      if (msgs.length > 0) {
+        // 用后端数据完整替换本地缓存
+        useChatStore.setState((s) => ({
+          messages: { ...s.messages, [friendId]: msgs.map(toStoreMsg) },
+        }))
+        lastMsgTimeRef.current[friendId] = msgs[msgs.length - 1].createdAt
+      }
+    } catch { /* 静默 */ }
+  }, [toStoreMsg])
+
+  // ── 轮询好友申请数量（用于导航红点）──
+  const pollRequestCount = useCallback(async () => {
+    try {
+      const res = await getFriendRequests()
+      setFriendRequestCount(res.data.requests.length)
+    } catch { /* 静默 */ }
+  }, [setFriendRequestCount])
+
+  useEffect(() => {
+    pollRequestCount()
+    const timer = setInterval(pollRequestCount, 30000)
+    return () => clearInterval(timer)
+  }, [pollRequestCount])
 
   // ── 加载好友列表 ──
   const loadFriends = useCallback(async () => {
@@ -182,6 +223,42 @@ export default function ChatPage() {
   }, [])
 
   useEffect(() => { loadFriends() }, [loadFriends])
+
+  const activeFriendId = activeConv?.type === 'friend' ? activeConv.data.id : null
+
+  // ── 切换好友会话时拉取历史消息 ──
+  useEffect(() => {
+    if (activeFriendId) loadMessages(activeFriendId)
+  }, [activeFriendId, loadMessages])
+
+  // ── 定时轮询：每 5 秒拉取当前好友会话的新消息 ──
+  useEffect(() => {
+    if (!activeFriendId) return
+    const friendId = activeFriendId
+
+    const poll = async () => {
+      try {
+        const since = lastMsgTimeRef.current[friendId]
+        const res = await fetchMessages(friendId, since)
+        const newMsgs = res.data.messages
+        if (newMsgs.length === 0) return
+
+        useChatStore.setState((s) => {
+          const existing = s.messages[friendId] ?? []
+          const existingIds = new Set(existing.map((m) => m.id))
+          const toAdd = newMsgs
+            .filter((m) => !existingIds.has(m.id))
+            .map(toStoreMsg)
+          if (toAdd.length === 0) return s
+          return { messages: { ...s.messages, [friendId]: [...existing, ...toAdd] } }
+        })
+        lastMsgTimeRef.current[friendId] = newMsgs[newMsgs.length - 1].createdAt
+      } catch { /* 静默 */ }
+    }
+
+    const timer = setInterval(poll, 5000)
+    return () => clearInterval(timer)
+  }, [activeFriendId, toStoreMsg])
 
   // ── 消息区滚动 ──
   useEffect(() => {
@@ -205,16 +282,45 @@ export default function ChatPage() {
   }
 
   // ── 发送消息 ──
-  const handleSend = () => {
-    if (!inputText.trim()) { message.warning('禁止发送空内容'); return }
-    sendMessage(currentId, {
-      id: Date.now().toString(),
-      senderId: 'me',
-      text: inputText.trim(),
-      time: new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }),
-      type: 'text',
-    })
+  const handleSend = async () => {
+    const text = inputText.trim()
+    if (!text) { message.warning('禁止发送空内容'); return }
     setInputText('')
+
+    const time = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+    const tempId = `tmp_${Date.now()}`
+
+    if (activeConv?.type === 'friend') {
+      const friendId = activeConv.data.id
+      // 乐观更新：立即显示
+      sendMessage(friendId, { id: tempId, senderId: 'me', text, time, type: 'text' })
+      try {
+        const res = await postMessage(friendId, text)
+        const saved = res.data.message
+        // 用服务端 id 替换临时 id，并记录时间戳
+        useChatStore.setState((s) => ({
+          messages: {
+            ...s.messages,
+            [friendId]: (s.messages[friendId] ?? []).map((m) =>
+              m.id === tempId ? { ...m, id: saved.id } : m
+            ),
+          },
+        }))
+        lastMsgTimeRef.current[friendId] = saved.createdAt
+      } catch {
+        message.error('消息发送失败，请重试')
+        // 回滚乐观更新
+        useChatStore.setState((s) => ({
+          messages: {
+            ...s.messages,
+            [friendId]: (s.messages[friendId] ?? []).filter((m) => m.id !== tempId),
+          },
+        }))
+      }
+    } else {
+      // 群聊：仅本地
+      sendMessage(currentId, { id: tempId, senderId: 'me', text, time, type: 'text' })
+    }
   }
 
   // ── 加号菜单 ──
@@ -290,7 +396,11 @@ export default function ChatPage() {
       } else {
         message.info('已拒绝申请')
       }
-      setRequests((prev) => prev.filter((r) => r.id !== requestId))
+      setRequests((prev) => {
+        const next = prev.filter((r) => r.id !== requestId)
+        setFriendRequestCount(next.length)
+        return next
+      })
     } catch (err: any) {
       message.error(err?.response?.data?.message ?? '操作失败')
     } finally {
@@ -387,7 +497,7 @@ export default function ChatPage() {
     />
   )
 
-  const activeFriend = activeConv?.type === 'friend' ? activeConv.data : null
+  const activeFriend = activeFriendId ? (activeConv?.type === 'friend' ? activeConv.data : null) : null
   const activeGroup  = activeConv?.type === 'group'  ? activeConv.data : null
 
   return (

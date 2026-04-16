@@ -25,11 +25,12 @@ export default function MainLayout() {
   const location = useLocation()
   const { user, logout } = useAuthStore()
   const chatUnread = useChatStore((s) => s.unreadTotal ?? 0)
+  const friendRequestCount = useChatStore((s) => s.friendRequestCount)
   const forumUnread = useNotifStore((s) => s.notifications.filter((n) => !n.read).length)
   const [sidebarHovered, setSidebarHovered] = useState(false)
 
   const getBadge = (path: string) => {
-    if (path === '/chat') return chatUnread
+    if (path === '/chat') return chatUnread + friendRequestCount
     if (path === '/forum') return forumUnread
     return 0
   }
