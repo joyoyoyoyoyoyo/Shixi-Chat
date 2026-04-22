@@ -1,5 +1,6 @@
 const User = require('../../models/User');
 const FriendRequest = require('../../models/FriendRequest');
+const { emitToUser } = require('../../socket/emit');
 
 // GET /api/friends/search?q=
 // Search by 11-digit userId or email
@@ -57,11 +58,26 @@ const sendRequest = async (req, res) => {
       return res.status(400).json({ message: '已经是好友了' });
 
     // Upsert request
-    await FriendRequest.findOneAndUpdate(
+    const request = await FriendRequest.findOneAndUpdate(
       { from: req.user.id, to: toUserId },
       { status: 'pending', createdAt: new Date() },
       { upsert: true, new: true }
     );
+
+    // 实时推送给接收方
+    const fromUser = await User.findById(req.user.id).select('_id userId username avatar');
+    emitToUser(toUserId, 'friend-request:new', {
+      request: {
+        id: request._id.toString(),
+        from: {
+          id: fromUser._id.toString(),
+          userId: fromUser.userId,
+          username: fromUser.username,
+          avatar: fromUser.avatar,
+        },
+        createdAt: request.createdAt,
+      },
+    });
 
     res.json({ message: '好友申请已发送' });
   } catch (err) {
@@ -115,10 +131,23 @@ const respondRequest = async (req, res) => {
       await User.findByIdAndUpdate(req.user.id, { $addToSet: { friends: request.from } });
       await User.findByIdAndUpdate(request.from, { $addToSet: { friends: req.user.id } });
 
+      emitToUser(request.from, 'friend-request:responded', {
+        requestId: request._id.toString(),
+        action: 'accept',
+        byUserId: req.user.id,
+      });
+
       res.json({ message: '已接受好友申请' });
     } else {
       request.status = 'rejected';
       await request.save();
+
+      emitToUser(request.from, 'friend-request:responded', {
+        requestId: request._id.toString(),
+        action: 'reject',
+        byUserId: req.user.id,
+      });
+
       res.json({ message: '已拒绝好友申请' });
     }
   } catch (err) {

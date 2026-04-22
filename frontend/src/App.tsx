@@ -11,6 +11,7 @@ import useChatStore from './store/chatStore'
 import useForumStore from './store/forumStore'
 import useNotifStore from './store/notificationStore'
 import { setCurrentUserId } from './utils/userStorage'
+import useRealtimeChat from './hooks/useRealtimeChat'
 
 // 监听登录/登出，切换用户数据
 function UserDataSync() {
@@ -43,6 +44,8 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
 
 export default function App() {
   const token = useAuthStore((s) => s.token)
+
+  useRealtimeChat()
 
   return (
     <BrowserRouter>

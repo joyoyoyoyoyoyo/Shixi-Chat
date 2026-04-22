@@ -1,38 +1,25 @@
-const Message = require('../../models/Message');
-const User = require('../../models/User');
-
-function formatMsg(m) {
-  return {
-    id: m._id.toString(),
-    senderId: m.senderId.toString(),
-    text: m.text,
-    type: m.type,
-    time: new Date(m.createdAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }),
-    createdAt: m.createdAt,
-  };
-}
-
-// conversationId 规则: [userAId, userBId].sort().join('_')
-function makeConvId(a, b) {
-  return [a.toString(), b.toString()].sort().join('_');
-}
+const { createMessage } = require('../../services/messageService');
+const { emitToUser } = require('../../socket/emit');
 
 // POST /api/messages  { friendId, text, type? }
 const sendMessage = async (req, res) => {
   try {
-    const { friendId, text, type = 'text' } = req.body;
-    if (!friendId || !text) return res.status(400).json({ message: '参数缺失' });
+    const { friendId, text, type } = req.body;
+    const { message, conversationId } = await createMessage({
+      senderId: req.user.id,
+      friendId,
+      text,
+      type,
+    });
 
-    // 校验是否为好友
-    const me = await User.findById(req.user.id).select('friends');
-    if (!me.friends.map(String).includes(friendId)) {
-      return res.status(403).json({ message: '对方不是你的好友' });
-    }
+    // 同步推送给双方在线 socket(若当前就是 socket 用户,emit 路径不会走到这里)
+    emitToUser(req.user.id, 'message:new', { conversationId, message });
+    emitToUser(friendId, 'message:new', { conversationId, message });
 
-    const conversationId = makeConvId(req.user.id, friendId);
-    const msg = await Message.create({ conversationId, senderId: req.user.id, text, type });
-    res.json({ message: formatMsg(msg) });
+    res.json({ message });
   } catch (err) {
+    if (err.code === 'BAD_REQUEST') return res.status(400).json({ message: err.message });
+    if (err.code === 'NOT_FRIEND') return res.status(403).json({ message: err.message });
     console.error('sendMessage error:', err);
     res.status(500).json({ message: '发送失败' });
   }
@@ -41,6 +28,8 @@ const sendMessage = async (req, res) => {
 // GET /api/messages/:friendId?since=ISODateString
 const getMessages = async (req, res) => {
   try {
+    const Message = require('../../models/Message');
+    const { formatMsg, makeConvId } = require('../../services/messageService');
     const { friendId } = req.params;
     const { since } = req.query;
     const conversationId = makeConvId(req.user.id, friendId);
