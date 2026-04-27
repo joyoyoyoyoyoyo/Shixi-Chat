@@ -8,6 +8,8 @@ export interface Message {
   text: string
   time: string
   type: 'text'
+  createdAt?: string   // ISO 时间，用于"几天前 / 详细日期"展示
+  recalled?: boolean   // 撤回标记
 }
 
 export interface Group {

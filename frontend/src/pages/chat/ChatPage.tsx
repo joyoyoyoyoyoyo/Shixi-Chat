@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { createPortal } from 'react-dom'
-import { Input, Button, Tooltip, Badge, Modal, Popover, message, Checkbox, Tabs, Spin, Empty, Tag, Switch, Drawer } from 'antd'
+import { Input, Button, Tooltip, Badge, Modal, Popover, message, Checkbox, Tabs, Spin, Empty, Tag, Switch, Drawer, Dropdown } from 'antd'
+import type { MenuProps } from 'antd'
 import {
   SmileOutlined, FileOutlined, PictureOutlined, PhoneOutlined, VideoCameraOutlined,
   MoreOutlined, SendOutlined, SearchOutlined, SettingOutlined, EllipsisOutlined,
@@ -45,6 +46,29 @@ function groupByInitial(friends: Friend[]) {
 // 根据字符串生成固定颜色
 const AVATAR_COLORS = ['#667eea', '#f093fb', '#4facfe', '#43e97b', '#fa709a', '#a18cd1', '#fda085', '#84fab0', '#f6d365', '#89f7fe', '#f7971e', '#c471ed', '#12c2e9', '#e96c1f', '#56ab2f']
 function colorFromId(id: string) { let h = 0; for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) & 0xffffffff; return AVATAR_COLORS[Math.abs(h) % AVATAR_COLORS.length] }
+
+// 聊天气泡时间格式：今天 HH:mm / 昨天 HH:mm / 本周 周X HH:mm / M月D日 HH:mm / YYYY年M月D日 HH:mm
+function formatChatTime(input?: string): string {
+  if (!input) return ''
+  // 兼容旧数据：若是 "HH:mm" 字符串，直接原样返回
+  if (/^\d{1,2}:\d{2}$/.test(input)) return input
+  const d = new Date(input)
+  if (isNaN(d.getTime())) return input
+  const now = new Date()
+  const hm = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+  const sameDay = (a: Date, b: Date) => a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate()
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+  const yesterday = new Date(today.getTime() - 86400000)
+  if (sameDay(d, now)) return hm
+  if (sameDay(d, yesterday)) return `昨天 ${hm}`
+  const diffDays = Math.floor((today.getTime() - new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime()) / 86400000)
+  if (diffDays > 0 && diffDays < 7) {
+    const wkDays = ['日', '一', '二', '三', '四', '五', '六']
+    return `周${wkDays[d.getDay()]} ${hm}`
+  }
+  if (d.getFullYear() === now.getFullYear()) return `${d.getMonth() + 1}月${d.getDate()}日 ${hm}`
+  return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日 ${hm}`
+}
 
 // 群组预设色
 const GROUP_COLORS = ['#667eea', '#fa709a', '#43e97b', '#f6a623', '#4facfe', '#a18cd1']
@@ -221,12 +245,13 @@ export default function ChatPage() {
   const activeApiGroup = activeGroupId ? apiGroups.find(g => g.id === activeGroupId) ?? null : null
 
   // ── API 消息 → chatStore Message 格式 ──
-  const toStoreMsg = useCallback((m: { id: string; senderId: string; text: string; type: string; time: string }): Message => ({
+  const toStoreMsg = useCallback((m: { id: string; senderId: string; text: string; type: string; time: string; createdAt?: string }): Message => ({
     id: m.id,
     senderId: m.senderId === user?.id ? 'me' : m.senderId,
     text: m.text,
     time: m.time,
     type: 'text',
+    createdAt: m.createdAt,
   }), [user?.id])
 
   // ── 从后端加载某好友的全量消息 ──
@@ -416,11 +441,12 @@ export default function ChatPage() {
     if (!text) { message.warning('禁止发送空内容'); return }
     setInputText('')
     const time = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+    const createdAt = new Date().toISOString()
     const tempId = `tmp_${Date.now()}`
 
     if (activeConv?.type === 'friend') {
       const friendId = activeConv.data.id
-      sendMessage(friendId, { id: tempId, senderId: 'me', text, time, type: 'text' })
+      sendMessage(friendId, { id: tempId, senderId: 'me', text, time, type: 'text', createdAt })
       const sock = getSocket()
       sock?.emit('typing:stop', { friendId })
       const rollback = () => {
@@ -447,6 +473,135 @@ export default function ChatPage() {
         } catch { rollback() }
       }
     }
+  }
+
+  // ── 气泡操作：复制文本 ──
+  const handleCopyText = async (text: string) => {
+    try {
+      await navigator.clipboard.writeText(text)
+      message.success('已复制')
+    } catch {
+      message.error('复制失败')
+    }
+  }
+
+  // ── 气泡操作：引用（私聊） ──
+  const handleQuotePrivate = (text: string, sender: string) => {
+    const quoted = text.split('\n').map((l) => `> ${l}`).join('\n')
+    setInputText((prev) => `${quoted}\n— ${sender}\n${prev}`)
+  }
+
+  // ── 气泡操作：引用（群聊） ──
+  const handleQuoteGroup = (text: string, sender: string) => {
+    const quoted = text.split('\n').map((l) => `> ${l}`).join('\n')
+    setGroupInput((prev) => `${quoted}\n— ${sender}\n${prev}`)
+  }
+
+  // ── 气泡操作：撤回（私聊，仅自己 2 分钟内） ──
+  const handlePrivateRecall = (msg: Message) => {
+    if (!activeConv || activeConv.type !== 'friend') return
+    const friendId = activeConv.data.id
+    Modal.confirm({
+      title: '撤回这条消息？',
+      content: '撤回后内容将不再显示',
+      okText: '撤回',
+      cancelText: '取消',
+      onOk: () => {
+        useChatStore.setState((s) => ({
+          messages: {
+            ...s.messages,
+            [friendId]: (s.messages[friendId] ?? []).map((m) =>
+              m.id === msg.id ? { ...m, recalled: true, text: '' } : m
+            ),
+          },
+        }))
+      },
+    })
+  }
+
+  // ── 气泡操作：删除（私聊，仅本地） ──
+  const handlePrivateDelete = (msg: Message) => {
+    if (!activeConv || activeConv.type !== 'friend') return
+    const friendId = activeConv.data.id
+    Modal.confirm({
+      title: '删除这条消息？',
+      content: '仅在本地删除，对方仍可看到',
+      okText: '删除',
+      cancelText: '取消',
+      okButtonProps: { danger: true },
+      onOk: () => {
+        useChatStore.setState((s) => ({
+          messages: {
+            ...s.messages,
+            [friendId]: (s.messages[friendId] ?? []).filter((m) => m.id !== msg.id),
+          },
+        }))
+      },
+    })
+  }
+
+  // ── 气泡操作：删除（群聊，仅本地） ──
+  const handleGroupDelete = (msg: GroupMessage) => {
+    if (!activeGroupId) return
+    Modal.confirm({
+      title: '删除这条消息？',
+      content: '仅在本地删除，对方仍可看到',
+      okText: '删除',
+      cancelText: '取消',
+      okButtonProps: { danger: true },
+      onOk: () => {
+        useChatStore.setState((s) => ({
+          groupMessages: {
+            ...s.groupMessages,
+            [activeGroupId]: (s.groupMessages[activeGroupId] ?? []).filter((m) => m.id !== msg.id),
+          },
+        }))
+      },
+    })
+  }
+
+  // ── 私聊气泡右键菜单构建 ──
+  const buildPrivateBubbleMenu = (msg: Message, isMe: boolean, senderName: string): MenuProps['items'] => {
+    if (msg.recalled) return [{ key: 'del', label: '删除', icon: <DeleteOutlined /> }]
+    const within2min = msg.createdAt ? (Date.now() - new Date(msg.createdAt).getTime() < 2 * 60 * 1000) : false
+    const items: MenuProps['items'] = [
+      { key: 'copy', label: '复制', icon: <CopyOutlined /> },
+      { key: 'quote', label: '引用', icon: <MessageOutlined /> },
+    ]
+    if (isMe && within2min && !msg.id.startsWith('tmp_')) {
+      items.push({ key: 'recall', label: '撤回', icon: <UndoOutlined /> })
+    }
+    items.push({ key: 'del', label: '删除', icon: <DeleteOutlined />, danger: true })
+    return items
+  }
+
+  const handlePrivateBubbleMenu = (key: string, msg: Message, senderName: string) => {
+    if (key === 'copy') handleCopyText(msg.text)
+    else if (key === 'quote') handleQuotePrivate(msg.text, senderName)
+    else if (key === 'recall') handlePrivateRecall(msg)
+    else if (key === 'del') handlePrivateDelete(msg)
+  }
+
+  // ── 群聊气泡右键菜单构建 ──
+  const buildGroupBubbleMenu = (msg: GroupMessage, isMe: boolean): MenuProps['items'] => {
+    if (msg.isRecalled) return [{ key: 'del', label: '删除', icon: <DeleteOutlined /> }]
+    const within2min = Date.now() - new Date(msg.createdAt).getTime() < 2 * 60 * 1000
+    const items: MenuProps['items'] = [
+      { key: 'copy', label: '复制', icon: <CopyOutlined /> },
+      { key: 'quote', label: '引用', icon: <MessageOutlined /> },
+    ]
+    if (isMe && within2min && !msg.id.startsWith('tmp_')) {
+      items.push({ key: 'recall', label: '撤回', icon: <UndoOutlined /> })
+    }
+    items.push({ key: 'del', label: '删除', icon: <DeleteOutlined />, danger: true })
+    return items
+  }
+
+  const handleGroupBubbleMenu = (key: string, msg: GroupMessage) => {
+    if (key === 'copy') handleCopyText(msg.content)
+    else if (key === 'quote') handleQuoteGroup(msg.content, msg.sender.username)
+    else if (key === 'recall') handleRecall(msg)
+    else if (key === 'del') handleGroupDelete(msg)
   }
 
   // ── 发送群消息 ──
@@ -975,6 +1130,17 @@ export default function ChatPage() {
               {currentMessages.map((msg) => {
                 const isMe = msg.senderId === 'me'
                 const sender = !isMe ? (friendMap[msg.senderId] ?? null) : null
+                const senderName = isMe ? (user?.username ?? '我') : (sender?.name ?? '对方')
+
+                // 撤回提示气泡（居中）
+                if (msg.recalled) {
+                  return (
+                    <div key={msg.id} style={{ textAlign: 'center', color: '#9ca3af', fontSize: 12, padding: '4px 0' }}>
+                      {isMe ? '你撤回了一条消息' : `${senderName} 撤回了一条消息`}
+                    </div>
+                  )
+                }
+
                 return (
                   <div key={msg.id} style={{ display: 'flex', justifyContent: isMe ? 'flex-end' : 'flex-start', alignItems: 'flex-end', gap: 8 }}>
                     {!isMe && (
@@ -983,10 +1149,22 @@ export default function ChatPage() {
                       </div>
                     )}
                     <div style={{ maxWidth: '60%' }}>
-                      <div style={{ padding: '10px 14px', borderRadius: isMe ? '18px 18px 4px 18px' : '18px 18px 18px 4px', background: isMe ? '#667eea' : '#fff', color: isMe ? '#fff' : '#1a1a2e', fontSize: 14, lineHeight: 1.6, boxShadow: '0 1px 4px rgba(0,0,0,0.06)', wordBreak: 'break-word' }}>
-                        {msg.text}
-                      </div>
-                      <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 4, textAlign: isMe ? 'right' : 'left' }}>{msg.time}</div>
+                      <Dropdown
+                        trigger={['contextMenu']}
+                        menu={{
+                          items: buildPrivateBubbleMenu(msg, isMe, senderName),
+                          onClick: ({ key }) => handlePrivateBubbleMenu(key, msg, senderName),
+                        }}
+                      >
+                        <div style={{ padding: '10px 14px', borderRadius: isMe ? '18px 18px 4px 18px' : '18px 18px 18px 4px', background: isMe ? '#667eea' : '#fff', color: isMe ? '#fff' : '#1a1a2e', fontSize: 14, lineHeight: 1.6, boxShadow: '0 1px 4px rgba(0,0,0,0.06)', wordBreak: 'break-word', whiteSpace: 'pre-wrap', cursor: 'context-menu' }}>
+                          {msg.text}
+                        </div>
+                      </Dropdown>
+                      <Tooltip title={msg.createdAt ? new Date(msg.createdAt).toLocaleString('zh-CN') : ''} placement={isMe ? 'left' : 'right'}>
+                        <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 4, textAlign: isMe ? 'right' : 'left', cursor: 'default' }}>
+                          {formatChatTime(msg.createdAt ?? msg.time)}
+                        </div>
+                      </Tooltip>
                     </div>
                     {isMe && (
                       <div className="friend-avatar" style={{ background: '#667eea', width: 32, height: 32, fontSize: 12, flexShrink: 0 }}>
@@ -1101,9 +1279,17 @@ export default function ChatPage() {
                           <div style={{ fontSize: 11, color: '#9ca3af', marginBottom: 3 }}>{msg.sender.username}</div>
                         )}
                         <div style={{ position: 'relative' }}>
-                          <div style={{ padding: '10px 14px', borderRadius: isMe ? '18px 18px 4px 18px' : '18px 18px 18px 4px', background: isMe ? '#667eea' : '#fff', color: isMe ? '#fff' : '#1a1a2e', fontSize: 14, lineHeight: 1.6, boxShadow: '0 1px 4px rgba(0,0,0,0.06)', wordBreak: 'break-word' }}>
-                            {renderWithMentions(msg.content)}
-                          </div>
+                          <Dropdown
+                            trigger={['contextMenu']}
+                            menu={{
+                              items: buildGroupBubbleMenu(msg, isMe),
+                              onClick: ({ key }) => handleGroupBubbleMenu(key, msg),
+                            }}
+                          >
+                            <div style={{ padding: '10px 14px', borderRadius: isMe ? '18px 18px 4px 18px' : '18px 18px 18px 4px', background: isMe ? '#667eea' : '#fff', color: isMe ? '#fff' : '#1a1a2e', fontSize: 14, lineHeight: 1.6, boxShadow: '0 1px 4px rgba(0,0,0,0.06)', wordBreak: 'break-word', whiteSpace: 'pre-wrap', cursor: 'context-menu' }}>
+                              {renderWithMentions(msg.content)}
+                            </div>
+                          </Dropdown>
                           {canRecall && (
                             <Tooltip title="撤回">
                               <button
@@ -1116,9 +1302,11 @@ export default function ChatPage() {
                             </Tooltip>
                           )}
                         </div>
-                        <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 4, textAlign: isMe ? 'right' : 'left' }}>
-                          {new Date(msg.createdAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}
-                        </div>
+                        <Tooltip title={new Date(msg.createdAt).toLocaleString('zh-CN')} placement={isMe ? 'left' : 'right'}>
+                          <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 4, textAlign: isMe ? 'right' : 'left', cursor: 'default' }}>
+                            {formatChatTime(msg.createdAt)}
+                          </div>
+                        </Tooltip>
                       </div>
                       {isMe && (
                         <div style={{ width: 32, height: 32, borderRadius: '50%', background: '#667eea', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontSize: 12, fontWeight: 700, flexShrink: 0 }}>

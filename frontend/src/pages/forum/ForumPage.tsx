@@ -211,6 +211,49 @@ export default function ForumPage() {
     }
   }
 
+  // 点击论坛通知 → 标记已读 + 跳到对应论坛 + 打开对应话题详情
+  const handleNotifClick = async (n: ApiNotification) => {
+    // 异步标记已读，不阻塞跳转
+    handleMarkOneRead(n.id)
+    setNotifPanelOpen(false)
+
+    const forum = forums.find((f) => f.id === n.forumId)
+    if (!forum) {
+      message.warning('该论坛不存在或已解散')
+      return
+    }
+    if (!forum.isMember) {
+      message.warning('请先加入该论坛后再查看话题')
+      return
+    }
+
+    // 切到目标论坛的话题 tab
+    setActiveForum(forum)
+    setMainTab('topics')
+    setShowDiscover(false)
+    setTopicSearch('')
+    setSortMode('latest')
+    setComments([])
+
+    try {
+      setTopicsLoading(true)
+      setActiveTopic(null)
+      const res = await getTopics(forum.id)
+      setTopics(res.data.topics)
+      const target = res.data.topics.find((t) => t.id === n.topicId)
+      if (target) {
+        setActiveTopic(target)
+        loadComments(target.id)
+      } else {
+        message.warning('该话题已被删除')
+      }
+    } catch {
+      message.error('加载话题失败')
+    } finally {
+      setTopicsLoading(false)
+    }
+  }
+
   const handleMgmtRespond = async (forumId: string, reqId: string, action: 'approve' | 'reject') => {
     try {
       await respondRequest(forumId, reqId, action)
@@ -731,7 +774,7 @@ export default function ForumPage() {
                 likeNotifs.map((n) => (
                   <div
                     key={n.id}
-                    onClick={() => handleMarkOneRead(n.id)}
+                    onClick={() => handleNotifClick(n)}
                     style={{ padding: '12px 16px', display: 'flex', alignItems: 'flex-start', gap: 10, cursor: 'pointer', background: n.read ? '#fff' : '#f5f6ff', borderBottom: '1px solid #f9fafb', transition: 'background 0.15s' }}
                   >
                     {!n.read && <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#667eea', flexShrink: 0, marginTop: 6 }} />}
@@ -759,7 +802,7 @@ export default function ForumPage() {
                 commentNotifs.map((n) => (
                   <div
                     key={n.id}
-                    onClick={() => handleMarkOneRead(n.id)}
+                    onClick={() => handleNotifClick(n)}
                     style={{ padding: '12px 16px', display: 'flex', alignItems: 'flex-start', gap: 10, cursor: 'pointer', background: n.read ? '#fff' : '#f5f6ff', borderBottom: '1px solid #f9fafb', transition: 'background 0.15s' }}
                   >
                     {!n.read && <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#667eea', flexShrink: 0, marginTop: 6 }} />}

@@ -39,6 +39,7 @@ export default function useRealtimeChat() {
         text: message.text,
         time: message.time,
         type: 'text',
+        createdAt: message.createdAt,
       }
       useChatStore.setState((s) => {
         const list = s.messages[friendId] ?? []
