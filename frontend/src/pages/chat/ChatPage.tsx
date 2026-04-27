@@ -47,6 +47,29 @@ function groupByInitial(friends: Friend[]) {
 const AVATAR_COLORS = ['#667eea', '#f093fb', '#4facfe', '#43e97b', '#fa709a', '#a18cd1', '#fda085', '#84fab0', '#f6d365', '#89f7fe', '#f7971e', '#c471ed', '#12c2e9', '#e96c1f', '#56ab2f']
 function colorFromId(id: string) { let h = 0; for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) & 0xffffffff; return AVATAR_COLORS[Math.abs(h) % AVATAR_COLORS.length] }
 
+// ── 引用消息：用魔法前缀把引用元信息编码进消息文本，不需要后端改动 ──
+// 格式：Q{json}E\n实际正文
+interface QuoteRef { n: string; t: string }   // n=发送人 t=预览文本（截断）
+const QUOTE_RE = /^Q(.+?)E\n?/
+function encodeQuote(q: QuoteRef, body: string): string {
+  return `Q${JSON.stringify(q)}E\n${body}`
+}
+function parseQuote(text: string): { quote: QuoteRef | null; body: string } {
+  const m = text.match(QUOTE_RE)
+  if (!m) return { quote: null, body: text }
+  try {
+    const q = JSON.parse(m[1]) as QuoteRef
+    return { quote: q, body: text.slice(m[0].length) }
+  } catch {
+    return { quote: null, body: text }
+  }
+}
+function previewOf(text: string, max = 40): string {
+  const { body } = parseQuote(text)
+  const oneLine = body.replace(/\s+/g, ' ').trim()
+  return oneLine.length > max ? oneLine.slice(0, max) + '…' : oneLine
+}
+
 // 聊天气泡时间格式：今天 HH:mm / 昨天 HH:mm / 本周 周X HH:mm / M月D日 HH:mm / YYYY年M月D日 HH:mm
 function formatChatTime(input?: string): string {
   if (!input) return ''
@@ -164,6 +187,8 @@ export default function ChatPage() {
   const [blockedIds, setBlockedIds] = useState<Set<string>>(new Set())
   const [activeConv, setActiveConv] = useState<ActiveConv | null>(null)
   const [inputText, setInputText] = useState('')
+  // 引用消息草稿（私聊和群聊共用：因同时只能有一个活跃会话）
+  const [pendingQuote, setPendingQuote] = useState<QuoteRef | null>(null)
   const [friendSearch, setFriendSearch] = useState('')
   const [friendListOpen, setFriendListOpen] = useState(false)
 
@@ -422,10 +447,12 @@ export default function ChatPage() {
   // ── 选中会话 ──
   const selectFriend = (friend: Friend) => {
     setActiveConv({ type: 'friend', data: friend })
+    setPendingQuote(null)   // 切换会话清掉引用草稿
     clearFriendUnread(friend.id)
   }
   const selectGroup = (group: Group) => {
     setActiveConv({ type: 'group', data: group })
+    setPendingQuote(null)
   }
   const selectApiGroup = (g: ApiGroup) => {
     setActiveConv({
@@ -437,9 +464,12 @@ export default function ChatPage() {
 
   // ── 发送私聊消息 ──
   const handleSend = async () => {
-    const text = inputText.trim()
-    if (!text) { message.warning('禁止发送空内容'); return }
+    const trimmed = inputText.trim()
+    if (!trimmed) { message.warning('禁止发送空内容'); return }
+    // 若有引用草稿：把引用编码进文本一起发送
+    const text = pendingQuote ? encodeQuote(pendingQuote, trimmed) : trimmed
     setInputText('')
+    setPendingQuote(null)
     const time = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
     const createdAt = new Date().toISOString()
     const tempId = `tmp_${Date.now()}`
@@ -485,16 +515,9 @@ export default function ChatPage() {
     }
   }
 
-  // ── 气泡操作：引用（私聊） ──
-  const handleQuotePrivate = (text: string, sender: string) => {
-    const quoted = text.split('\n').map((l) => `> ${l}`).join('\n')
-    setInputText((prev) => `${quoted}\n— ${sender}\n${prev}`)
-  }
-
-  // ── 气泡操作：引用（群聊） ──
-  const handleQuoteGroup = (text: string, sender: string) => {
-    const quoted = text.split('\n').map((l) => `> ${l}`).join('\n')
-    setGroupInput((prev) => `${quoted}\n— ${sender}\n${prev}`)
+  // ── 气泡操作：引用 ──（设为 pendingQuote，不污染输入框）
+  const handleQuoteMessage = (rawText: string, sender: string) => {
+    setPendingQuote({ n: sender, t: previewOf(rawText, 80) })
   }
 
   // ── 气泡操作：撤回（私聊，仅自己 2 分钟内） ──
@@ -576,8 +599,9 @@ export default function ChatPage() {
   }
 
   const handlePrivateBubbleMenu = (key: string, msg: Message, senderName: string) => {
-    if (key === 'copy') handleCopyText(msg.text)
-    else if (key === 'quote') handleQuotePrivate(msg.text, senderName)
+    const { body } = parseQuote(msg.text)
+    if (key === 'copy') handleCopyText(body)
+    else if (key === 'quote') handleQuoteMessage(body, senderName)
     else if (key === 'recall') handlePrivateRecall(msg)
     else if (key === 'del') handlePrivateDelete(msg)
   }
@@ -598,8 +622,9 @@ export default function ChatPage() {
   }
 
   const handleGroupBubbleMenu = (key: string, msg: GroupMessage) => {
-    if (key === 'copy') handleCopyText(msg.content)
-    else if (key === 'quote') handleQuoteGroup(msg.content, msg.sender.username)
+    const { body } = parseQuote(msg.content)
+    if (key === 'copy') handleCopyText(body)
+    else if (key === 'quote') handleQuoteMessage(body, msg.sender.username)
     else if (key === 'recall') handleRecall(msg)
     else if (key === 'del') handleGroupDelete(msg)
   }
@@ -609,11 +634,13 @@ export default function ChatPage() {
     if (!activeGroupId || !groupInput.trim()) return
     const sock = getSocket()
     const tempId = `tmp_${Date.now()}`
+    const trimmed = groupInput.trim()
+    const content = pendingQuote ? encodeQuote(pendingQuote, trimmed) : trimmed
     const tempMsg: GroupMessage = {
       id: tempId,
       groupId: activeGroupId,
       sender: { id: user!.id, userId: user!.userId || '', username: user!.username, avatar: '' },
-      content: groupInput.trim(),
+      content,
       type: 'text',
       mentionedUsers: mentionedIds,
       isRecalled: false,
@@ -623,6 +650,7 @@ export default function ChatPage() {
     setGroupInput('')
     setMentionedIds([])
     setMentionOpen(false)
+    setPendingQuote(null)
 
     if (sock?.connected) {
       sock.emit('group:message:send', { groupId: activeGroupId, content: tempMsg.content, mentionedUserIds: mentionedIds }, (ack: any) => {
@@ -1044,7 +1072,7 @@ export default function ChatPage() {
                     </div>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 2 }}>
                       <span style={{ fontSize: 12, color: '#9ca3af', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: sidebarHovered ? 50 : 140 }}>
-                        {(() => { const m = messages[friend.id]; return m && m.length > 0 ? m[m.length - 1].text : '' })()}
+                        {(() => { const m = messages[friend.id]; return m && m.length > 0 ? previewOf(m[m.length - 1].text, 30) : '' })()}
                       </span>
                       {(unreadMap[friend.id] ?? 0) > 0 && (
                         <div style={{ minWidth: 18, height: 18, borderRadius: 9, background: '#667eea', color: '#fff', fontSize: 11, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0 4px' }}>
@@ -1079,7 +1107,7 @@ export default function ChatPage() {
                         <span style={{ fontSize: 11, color: '#9ca3af', flexShrink: 0, marginLeft: 4 }}>{g.members.length}人</span>
                       </div>
                       <div style={{ fontSize: 12, color: '#9ca3af', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: sidebarHovered ? 50 : 140 }}>
-                        {(() => { const msgs = groupMessages[g.id]; return msgs && msgs.length > 0 ? msgs[msgs.length - 1].content : '暂无消息' })()}
+                        {(() => { const msgs = groupMessages[g.id]; return msgs && msgs.length > 0 ? previewOf(msgs[msgs.length - 1].content, 30) : '暂无消息' })()}
                       </div>
                     </div>
                   </div>
@@ -1157,7 +1185,29 @@ export default function ChatPage() {
                         }}
                       >
                         <div style={{ padding: '10px 14px', borderRadius: isMe ? '18px 18px 4px 18px' : '18px 18px 18px 4px', background: isMe ? '#667eea' : '#fff', color: isMe ? '#fff' : '#1a1a2e', fontSize: 14, lineHeight: 1.6, boxShadow: '0 1px 4px rgba(0,0,0,0.06)', wordBreak: 'break-word', whiteSpace: 'pre-wrap', cursor: 'context-menu' }}>
-                          {msg.text}
+                          {(() => {
+                            const { quote, body } = parseQuote(msg.text)
+                            return (
+                              <>
+                                {quote && (
+                                  <div style={{
+                                    fontSize: 12,
+                                    padding: '6px 10px',
+                                    marginBottom: 6,
+                                    borderLeft: `3px solid ${isMe ? 'rgba(255,255,255,0.6)' : '#c0c4d6'}`,
+                                    background: isMe ? 'rgba(255,255,255,0.15)' : '#f4f5fb',
+                                    color: isMe ? 'rgba(255,255,255,0.9)' : '#6b7280',
+                                    borderRadius: 4,
+                                    maxWidth: '100%',
+                                  }}>
+                                    <div style={{ fontWeight: 600, marginBottom: 2, opacity: 0.85 }}>{quote.n}</div>
+                                    <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' }}>{quote.t}</div>
+                                  </div>
+                                )}
+                                {body}
+                              </>
+                            )
+                          })()}
                         </div>
                       </Dropdown>
                       <Tooltip title={msg.createdAt ? new Date(msg.createdAt).toLocaleString('zh-CN') : ''} placement={isMe ? 'left' : 'right'}>
@@ -1186,6 +1236,15 @@ export default function ChatPage() {
 
             {/* 输入框 */}
             <div style={{ flex: 4, background: '#fff', display: 'flex', flexDirection: 'column', padding: '12px 20px 16px', borderTop: '1px solid #f0f0f0' }}>
+              {pendingQuote && (
+                <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, padding: '8px 10px', marginBottom: 8, background: '#f4f5fb', borderLeft: '3px solid #667eea', borderRadius: 4, fontSize: 12 }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontWeight: 600, color: '#667eea', marginBottom: 2 }}>回复 {pendingQuote.n}</div>
+                    <div style={{ color: '#6b7280', overflow: 'hidden', textOverflow: 'ellipsis', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' }}>{pendingQuote.t}</div>
+                  </div>
+                  <CloseOutlined onClick={() => setPendingQuote(null)} style={{ cursor: 'pointer', color: '#9ca3af', fontSize: 12, marginTop: 2 }} />
+                </div>
+              )}
               <Input.TextArea value={inputText} onChange={handleInputChange}
                 onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend() } }}
                 placeholder="输入消息... (Enter 发送，Shift+Enter 换行)"
@@ -1287,7 +1346,28 @@ export default function ChatPage() {
                             }}
                           >
                             <div style={{ padding: '10px 14px', borderRadius: isMe ? '18px 18px 4px 18px' : '18px 18px 18px 4px', background: isMe ? '#667eea' : '#fff', color: isMe ? '#fff' : '#1a1a2e', fontSize: 14, lineHeight: 1.6, boxShadow: '0 1px 4px rgba(0,0,0,0.06)', wordBreak: 'break-word', whiteSpace: 'pre-wrap', cursor: 'context-menu' }}>
-                              {renderWithMentions(msg.content)}
+                              {(() => {
+                                const { quote, body } = parseQuote(msg.content)
+                                return (
+                                  <>
+                                    {quote && (
+                                      <div style={{
+                                        fontSize: 12,
+                                        padding: '6px 10px',
+                                        marginBottom: 6,
+                                        borderLeft: `3px solid ${isMe ? 'rgba(255,255,255,0.6)' : '#c0c4d6'}`,
+                                        background: isMe ? 'rgba(255,255,255,0.15)' : '#f4f5fb',
+                                        color: isMe ? 'rgba(255,255,255,0.9)' : '#6b7280',
+                                        borderRadius: 4,
+                                      }}>
+                                        <div style={{ fontWeight: 600, marginBottom: 2, opacity: 0.85 }}>{quote.n}</div>
+                                        <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' }}>{quote.t}</div>
+                                      </div>
+                                    )}
+                                    {renderWithMentions(body)}
+                                  </>
+                                )
+                              })()}
                             </div>
                           </Dropdown>
                           {canRecall && (
@@ -1351,6 +1431,15 @@ export default function ChatPage() {
                   <div style={{ padding: '16px 0', textAlign: 'center', color: '#9ca3af', fontSize: 13 }}>全员禁言中，无法发言</div>
                 ) : (
                   <>
+                    {pendingQuote && (
+                      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, padding: '8px 10px', marginBottom: 8, background: '#f4f5fb', borderLeft: '3px solid #667eea', borderRadius: 4, fontSize: 12 }}>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontWeight: 600, color: '#667eea', marginBottom: 2 }}>回复 {pendingQuote.n}</div>
+                          <div style={{ color: '#6b7280', overflow: 'hidden', textOverflow: 'ellipsis', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' }}>{pendingQuote.t}</div>
+                        </div>
+                        <CloseOutlined onClick={() => setPendingQuote(null)} style={{ cursor: 'pointer', color: '#9ca3af', fontSize: 12, marginTop: 2 }} />
+                      </div>
+                    )}
                     <textarea
                       ref={groupInputRef}
                       value={groupInput}
