@@ -10,6 +10,7 @@ import useAuthStore from './store/authStore'
 import useChatStore from './store/chatStore'
 import useForumStore from './store/forumStore'
 import useNotifStore from './store/notificationStore'
+import useProfileStore from './store/profileStore'
 import { setCurrentUserId } from './utils/userStorage'
 import useRealtimeChat from './hooks/useRealtimeChat'
 
@@ -25,12 +26,14 @@ function UserDataSync() {
       useChatStore.persist.rehydrate()
       useForumStore.persist.rehydrate()
       useNotifStore.persist.rehydrate()
+      useProfileStore.persist.rehydrate()
     } else {
       // 登出：清除 ID，将所有 store 恢复初始状态
       setCurrentUserId(null)
       useChatStore.getState().reset()
       useForumStore.getState().reset()
       useNotifStore.getState().reset()
+      useProfileStore.getState().reset()
     }
   }, [user?.id])
 
